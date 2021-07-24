@@ -5,32 +5,22 @@ import os
 import pathlib
 import queue
 import re
-import signal
-import socket
 import subprocess
 import sys
-import tempfile
 import threading
-import types
-import psutil
 import time
+import types
 import typing
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
+import psutil
 import pythoncom
 import wmi as wmilib
 
 logger = logging.getLogger(__name__)
 FLUENT_BIT_VERSION = "1.8.2"
 PLINK_VERSION = "0.76"
-
-# Treasure Data 403s with the default urllib setup
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/35.0.1916.47 Safari/537.36"
-)
 
 VmGuid = str
 
@@ -57,9 +47,6 @@ class DownloadService:
         request = Request(
             url,
             data=None,
-            headers={
-                "User-Agent": USER_AGENT,
-            },
         )
 
         response = urlopen(request)
@@ -97,17 +84,19 @@ class LogShipper:
             payload = json.dumps(event).encode("utf-8")
             with self._socket_mutex:
                 self._write(payload)
-    
+
     def _write(self, data):
-    #    sock = sys.stdout.buffer
-    #    sock.write(data)
-    #    sock.write(b"\n")
-        response = urlopen(Request(
-            url=f"http://{sys.argv[1]}",
-            method="POST",
-            headers={"Content-Type": "application/json"},
-            data=data,
-        ))
+        #    sock = sys.stdout.buffer
+        #    sock.write(data)
+        #    sock.write(b"\n")
+        response = urlopen(
+            Request(
+                url=f"http://{sys.argv[1]}",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                data=data,
+            )
+        )
         # logger.info("%s", response)
 
 
@@ -117,39 +106,39 @@ class MachineEventManager:
     """
 
     ENUMS = {
-            "Msvm_ComputerSystem": {
-                "EnabledState": {
-                    0: "Unknown",
-                    1: "Other",
-                    2: "Enabled",
-                    3: "Disabled",
-                    4: "Shutting Down",
-                    5: "Not Applicable",
-                    6: "Enabled but Offline",
-                    7: "In Test",
-                    8: "Deferred",
-                    9: "Quiesce",
-                    10: "Starting",
-                },
-                "HealthState": {
-                    5: "OK",
-                    20: "Major Failure",
-                    25: "Critical Failure",
-                },
-                "OperationalStatus": {
-                    2: "OK",
-                    3: "Degraded",
-                    5: "Predictive Failure",
-                    10: "Stopped",
-                    11: "In Service",
-                    15: "Dormant",
-                },
-            }
+        "Msvm_ComputerSystem": {
+            "EnabledState": {
+                0: "Unknown",
+                1: "Other",
+                2: "Enabled",
+                3: "Disabled",
+                4: "Shutting Down",
+                5: "Not Applicable",
+                6: "Enabled but Offline",
+                7: "In Test",
+                8: "Deferred",
+                9: "Quiesce",
+                10: "Starting",
+            },
+            "HealthState": {
+                5: "OK",
+                20: "Major Failure",
+                25: "Critical Failure",
+            },
+            "OperationalStatus": {
+                2: "OK",
+                3: "Degraded",
+                5: "Predictive Failure",
+                10: "Stopped",
+                11: "In Service",
+                15: "Dormant",
+            },
         }
-    
-    ENUMS["Msvm_ComputerSystem"]["RequestedState"] = ENUMS[
-            "Msvm_ComputerSystem"
-        ]["EnabledState"]
+    }
+
+    ENUMS["Msvm_ComputerSystem"]["RequestedState"] = ENUMS["Msvm_ComputerSystem"][
+        "EnabledState"
+    ]
 
     def __init__(self):
         self.wmi = wmilib.WMI(namespace=r"root\virtualization\v2")
@@ -327,16 +316,16 @@ class SerialWatcher:
                         "message": event,
                     }
                 )
-            
-            vm_data = wmilib.WMI(namespace=r"root\virtualization\v2").Msvm_ComputerSystem(
-                Name=vm.id
-            )[0]
+
+            vm_data = wmilib.WMI(
+                namespace=r"root\virtualization\v2"
+            ).Msvm_ComputerSystem(Name=vm.id)[0]
 
             if vm_data.EnabledState not in [2, 10]:
                 break
-            else:
-                logger.info("plink exited with %s", str(process.poll()))
-                logger.info("VM is %d--restarting plink", vm_data.EnabledState)
+
+            logger.info("plink exited with %s", str(process.poll()))
+            logger.info("VM is %d--restarting plink", vm_data.EnabledState)
 
         if process.poll() is not None:
             process.terminate()
@@ -344,7 +333,7 @@ class SerialWatcher:
 
 if __name__ == "__main__":
     logging.basicConfig(
-        format=f"%(asctime)s:%(levelname)1s:%(process)8d:%(name)s: %(message)s",
+        format="%(asctime)s:%(levelname)1s:%(process)8d:%(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S%z",
         level=logging.INFO,
     )
