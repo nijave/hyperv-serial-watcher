@@ -35,7 +35,8 @@ class VMInfo:
 class DownloadService:
     @staticmethod
     def get(url):
-        return urlopen(url).read()
+        with urlopen(url) as response:
+            return response.read()
 
     @classmethod
     def save(cls, url, filename):
@@ -49,11 +50,11 @@ class DownloadService:
             data=None,
         )
 
-        response = urlopen(request)
-        with open(path, "wb") as f:
-            while data := response.read(4 * 1024 * 1024):
-                logger.info("Wrote %d bytes to %s", len(data), filename)
-                f.write(data)
+        with urlopen(request) as response:
+            with open(path, "wb") as f:
+                while data := response.read(4 * 1024 * 1024):
+                    logger.info("Wrote %d bytes to %s", len(data), filename)
+                    f.write(data)
 
     @staticmethod
     def _script_directory():
@@ -85,11 +86,12 @@ class LogShipper:
             with self._socket_mutex:
                 self._write(payload)
 
-    def _write(self, data):
+    @staticmethod
+    def _write(data):
         #    sock = sys.stdout.buffer
         #    sock.write(data)
         #    sock.write(b"\n")
-        response = urlopen(
+        urlopen(
             Request(
                 url=f"http://{sys.argv[1]}",
                 method="POST",
@@ -231,13 +233,13 @@ class SerialWatcher:
             if self._processes[vm.id].is_alive():
                 logger.warning("Logger already running for %s", vm.id)
                 return
-            else:
-                logger.info(
-                    "Serial watcher is terminated for %s",
-                    vm.id,
-                )
-                self._processes[vm.id].join()
-                del self._processes[vm.id]
+
+            logger.info(
+                "Serial watcher is terminated for %s",
+                vm.id,
+            )
+            self._processes[vm.id].join()
+            del self._processes[vm.id]
 
         out_t = threading.Thread(
             target=self._watch_events,
@@ -285,7 +287,7 @@ class SerialWatcher:
             "115200,8,1,N,N",
         ]
         logger.info("%s", " ".join(args))
-        process = subprocess.Popen(
+        process = subprocess.Popen(  # pylint: disable=consider-using-with
             args,
             stdout=subprocess.PIPE,
             bufsize=16 * 1024 * 1024,  # 16mb
