@@ -152,8 +152,7 @@ class MachineEventManager:
     def list_virtual_machine_ports(self):
         vm_data = self._ps_exec(
             "Get-VM"
-            " | Select -ExpandProperty ComPort1"
-            " | Select Id, VMName, Path"
+            " | Select Id, VMName, @{n='Path'; e={$_.ComPort1.Path}}"
             " | Where-Object {$_.Path}"
             " | ConvertTo-Json"
         )
@@ -260,7 +259,6 @@ class SerialWatcher:
         # There are probably other reasons to get this generic error besides ^^
         except OSError as e:
             logger.exception(e)
-            # raise e
 
     @staticmethod
     def _copy_pipe(vm: VMInfo, in_pipe: io.TextIOWrapper, out_queue: queue.Queue):
@@ -293,6 +291,8 @@ if __name__ == "__main__":
     for vm_info in vm_list:
         watcher.watch(vm_info)
 
+    # TODO event watcher should start before static list to avoid race condition
+    # e.g. VM start after list before event watcher is started
     while True:
         vm_event = next(events)
         logger.info("Got vm_event %s", vm_event)
