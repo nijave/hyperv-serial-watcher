@@ -1,8 +1,7 @@
 import datetime
+import io
 import json
 import logging
-import os
-import pathlib
 import queue
 import re
 import subprocess
@@ -14,12 +13,9 @@ import typing
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
-import psutil
-import pythoncom
 import wmi as wmilib
 
 logger = logging.getLogger(__name__)
-PLINK_VERSION = "0.76"
 
 VmGuid = str
 
@@ -29,35 +25,6 @@ class VMInfo:
     id: VmGuid
     name: str
     serial_port_path: str
-
-
-class DownloadService:
-    @staticmethod
-    def get(url):
-        with urlopen(url) as response:
-            return response.read()
-
-    @classmethod
-    def save(cls, url, filename):
-        path = cls._script_directory() / filename
-        if not path.parent.is_dir():
-            path.parent.mkdir()
-
-        logger.info("Downloading %s", url)
-        request = Request(
-            url,
-            data=None,
-        )
-
-        with urlopen(request) as response:
-            with open(path, "wb") as f:
-                while data := response.read(4 * 1024 * 1024):
-                    logger.info("Wrote %d bytes to %s", len(data), filename)
-                    f.write(data)
-
-    @staticmethod
-    def _script_directory():
-        return pathlib.Path(os.path.realpath(__file__)).parent
 
 
 class LogShipper:
@@ -79,11 +46,11 @@ class LogShipper:
     def _process_events(self):
         while event := self.queue.get():
             payload = json.dumps(event).encode("utf-8")
-            # with self._socket_mutex:
             self._write(payload)
 
     @staticmethod
     def _write(data):
+        # TODO, check for errors? retry? use requests module?
         urlopen(
             Request(
                 url=f"http://{sys.argv[1]}",
@@ -96,7 +63,7 @@ class LogShipper:
 
 class MachineEventManager:
     """
-    Process VM change events using WMI event subscription
+    Process VM change events using WMI vm_event subscription
     """
 
     ENUMS = {
@@ -136,6 +103,8 @@ class MachineEventManager:
 
     def __init__(self):
         self.wmi = wmilib.WMI(namespace=r"root\virtualization\v2")
+        # TODO probably can be replaced with Register-WmiEvent outputting
+        # json lines to remove wmi dep
         self.watcher = self.wmi.ExecNotificationQuery(
             """
             SELECT *
@@ -180,6 +149,35 @@ class MachineEventManager:
             else:
                 logger.info("%s", json.dumps(raw_data))
 
+    def list_virtual_machine_ports(self):
+        vm_data = self._ps_exec(
+            "Get-VM"
+            " | Select -ExpandProperty ComPort1"
+            " | Select Id, VMName, Path"
+            " | Where-Object {$_.Path}"
+            " | ConvertTo-Json"
+        )
+
+        return [
+            VMInfo(
+                id=vm["Id"],
+                name=vm["VMName"],
+                serial_port_path=vm["Path"],
+            )
+            for vm in vm_data
+        ]
+
+    @staticmethod
+    def _ps_exec(command: str):
+        start = time.time()
+        exec_result = subprocess.check_output(
+            ["powershell", "-Command", command], text=True
+        ).strip()
+
+        decoded_result = json.loads(exec_result)
+        logger.debug("Completed `%s` in %d", command, time.time() - start)
+        return decoded_result
+
     def _get_serial_path(self, vm_id: VmGuid) -> str:
         if not re.match(r"^[A-Fa-f0-9-]+$", vm_id):
             logger.warning("Not a VmGuid %s", vm_id)
@@ -187,6 +185,7 @@ class MachineEventManager:
 
         serial_port_path = ""
         try:
+            # TODO use PowerShell
             serial_port_path = (
                 (
                     [
@@ -209,20 +208,18 @@ class MachineEventManager:
 
 
 class SerialWatcher:
-    PATH = r"vendor/plink.exe"
-
     def __init__(self, message_q: queue.Queue):
-        self._download()
-        self._processes = {}
+        self._watchers = {}
         self._shutdown = threading.Event()
         self._queue = message_q
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self._shutdown.set()
 
     def watch(self, vm: VMInfo) -> None:
-        if vm.id in self._processes:
-            if self._processes[vm.id].is_alive():
+        logger.info("Attempting to start watcher for %s", vm.name)
+        if vm.id in self._watchers:
+            if self._watchers[vm.id].is_alive():
                 logger.warning("Logger already running for %s", vm.id)
                 return
 
@@ -230,8 +227,8 @@ class SerialWatcher:
                 "Serial watcher is terminated for %s",
                 vm.id,
             )
-            self._processes[vm.id].join()
-            del self._processes[vm.id]
+            self._watchers[vm.id].join()
+            del self._watchers[vm.id]
 
         out_t = threading.Thread(
             target=self._watch_events,
@@ -243,86 +240,39 @@ class SerialWatcher:
         )
 
         out_t.start()
-        self._processes[vm.id] = out_t
-
-    @classmethod
-    def _download(cls):
-        if pathlib.Path(cls.PATH).is_file():
-            logger.info("%s already exists", cls.PATH)
-            return
-
-        DownloadService.save(
-            f"https://the.earth.li/~sgtatham/putty/{PLINK_VERSION}/w64/plink.exe",
-            cls.PATH,
-        )
-
-    @staticmethod
-    def _start_plink(vm: VMInfo) -> subprocess.Popen:
-        candidates = psutil.process_iter(["pid", "name", "cmdline"])
-
-        logger.info("%s", candidates)
-
-        for c in candidates:
-            if f"-serial {vm.serial_port_path}" in c.cmdline():
-                logger.info("Killing orphaned plink %d %s", c.pid(), c.cmdline())
-                c.kill()
-                c.wait(timeout=10)
-
-        logger.info("Starting plink process")
-        args = [
-            r"vendor\plink.exe",
-            "-batch",
-            "-v",
-            "-serial",
-            vm.serial_port_path,
-            "-sercfg",
-            "115200,8,1,N,N",
-        ]
-        logger.info("%s", " ".join(args))
-        process = subprocess.Popen(  # pylint: disable=consider-using-with
-            args,
-            stdout=subprocess.PIPE,
-            bufsize=16 * 1024 * 1024,  # 16mb
-            text=True,
-        )
-
-        return process
+        self._watchers[vm.id] = out_t
 
     @classmethod
     def _watch_events(cls, vm: VMInfo, out_q: queue.Queue, shutdown: threading.Event):
-        logger.info("Checking for orphaned plink processes")
-        pythoncom.CoInitialize()  # needed for hyper-v vm status
+        try:
+            with open(vm.serial_port_path, "r") as pipe:
+                while not shutdown.is_set():
+                    cls._copy_pipe(vm, pipe, out_q)
+        # Not sure if there's any other case this can happen besides VM is powered off
+        except FileNotFoundError:
+            # These cases can be ignored since the event watching code will catch startup events and retry
+            # the port watcher thread for that VM
+            logger.error(
+                "Pipe %s doesn't currently exist. VM likely isn't running",
+                vm.serial_port_path,
+            )
+        # TODO handle OSError 22/ctypes.WinError() 6 when pipe is already opened somewhere else
+        # There are probably other reasons to get this generic error besides ^^
+        except OSError as e:
+            logger.exception(e)
+            # raise e
 
-        while not shutdown.is_set():
-            process = cls._start_plink(vm)
-
-            while process.poll() is None:
-                event = process.stdout.readline().rstrip()
-                if not event:
-                    time.sleep(0.5)
-                    continue
-
-                out_q.put(
-                    {
-                        "time": datetime.datetime.now().isoformat(),
-                        "id": vm.id,
-                        "hostname": vm.name,
-                        "message": event,
-                    }
-                )
-
-            vm_data = wmilib.WMI(
-                namespace=r"root\virtualization\v2"
-            ).Msvm_ComputerSystem(Name=vm.id)[0]
-
-            if vm_data.EnabledState not in [2, 10]:
-                break
-
-            logger.info("plink exited with %s", str(process.poll()))
-            logger.info("VM is %d--restarting plink", vm_data.EnabledState)
-
-        if process.poll() is not None:
-            process.terminate()
+    @staticmethod
+    def _copy_pipe(vm: VMInfo, in_pipe: io.TextIOWrapper, out_queue: queue.Queue):
+        while event := in_pipe.readline():
+            out_queue.put(
+                {
+                    "time": datetime.datetime.now().isoformat(),
+                    "id": vm.id,
+                    "hostname": vm.name,
+                    "message": event,
+                }
+            )
 
 
 if __name__ == "__main__":
@@ -338,12 +288,17 @@ if __name__ == "__main__":
     shipper.start()
     watcher = SerialWatcher(shipper.queue)
 
-    while True:
-        event = next(events)
-        logger.info("Got event %s", event)
+    vm_list = manager.list_virtual_machine_ports()
+    logger.info("Found %s with COM ports", [v.name for v in vm_list])
+    for vm_info in vm_list:
+        watcher.watch(vm_info)
 
-        if not event.serial_port_path:
-            logger.warning("No serial port found for %s", event.name)
+    while True:
+        vm_event = next(events)
+        logger.info("Got vm_event %s", vm_event)
+
+        if not vm_event.serial_port_path:
+            logger.warning("No serial port found for %s", vm_event.name)
             continue
 
-        watcher.watch(event)
+        watcher.watch(vm_event)
