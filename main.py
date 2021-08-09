@@ -19,7 +19,6 @@ import pythoncom
 import wmi as wmilib
 
 logger = logging.getLogger(__name__)
-FLUENT_BIT_VERSION = "1.8.2"
 PLINK_VERSION = "0.76"
 
 VmGuid = str
@@ -69,9 +68,6 @@ class LogShipper:
     def __init__(self):
         self.queue = queue.Queue()
         self._socket_mutex = threading.Lock()
-        # sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # sock.connect((sys.argv[0], int(sys.argv[1])))
-        # self._out_socket = sock
         self._worker = threading.Thread(target=self._process_events)
 
     def start(self):
@@ -83,14 +79,11 @@ class LogShipper:
     def _process_events(self):
         while event := self.queue.get():
             payload = json.dumps(event).encode("utf-8")
-            with self._socket_mutex:
-                self._write(payload)
+            # with self._socket_mutex:
+            self._write(payload)
 
     @staticmethod
     def _write(data):
-        #    sock = sys.stdout.buffer
-        #    sock.write(data)
-        #    sock.write(b"\n")
         urlopen(
             Request(
                 url=f"http://{sys.argv[1]}",
@@ -99,7 +92,6 @@ class LogShipper:
                 data=data,
             )
         )
-        # logger.info("%s", response)
 
 
 class MachineEventManager:
