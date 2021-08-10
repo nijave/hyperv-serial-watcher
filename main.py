@@ -1,19 +1,15 @@
+import asyncio
 import datetime
-import io
 import json
 import logging
 import queue
 import re
-import subprocess
 import sys
 import threading
 import time
-import types
 import typing
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
-
-import wmi as wmilib
 
 logger = logging.getLogger(__name__)
 
@@ -102,59 +98,66 @@ class MachineEventManager:
     ]
 
     def __init__(self):
-        self.wmi = wmilib.WMI(namespace=r"root\virtualization\v2")
-        # TODO probably can be replaced with Register-WmiEvent outputting
-        # json lines to remove wmi dep
-        self.watcher = self.wmi.ExecNotificationQuery(
-            """
-            SELECT *
-            FROM __InstanceModificationEvent
-            WITHIN 2
-            WHERE
-                TargetInstance ISA 'MSVM_ComputerSystem'
-            """
-            # OR TargetInstance ISA 'Msvm_SerialPortSettingData'
+        self.watcher = None
+
+    async def events(self) -> typing.AsyncGenerator[VMInfo, None]:
+        logger.info("Creating event watcher process")
+        self.watcher = await asyncio.create_subprocess_exec(
+            "powershell",
+            "-Command",
+            "-",
+            stdin=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE,
         )
 
-    def events(self) -> typing.Generator[VMInfo, None, None]:
-        while e := self.watcher.NextEvent():
-            inst = e.TargetInstance
-            # TODO hard code list of attributes actually used
-            attrs = [
-                a
-                for a in dir(inst)
-                if not a.endswith("_")
-                and not a.startswith("_")
-                and not isinstance(getattr(inst, a), types.MethodType)
-            ]
-            raw_data = {a: getattr(inst, a) for a in attrs}
-            if inst.Path_.Class == "Msvm_ComputerSystem":
-                data = {
-                    k: self.ENUMS["Msvm_ComputerSystem"][k][v]
-                    for k, v in raw_data.items()
-                    if k in ["HealthState", "EnabledState", "RequestedState"]
-                } | {k: v for k, v in raw_data.items() if k in ["ElementName", "Name"]}
+        logger.info("Registering WMI event")
+        event_command = r"""
+            $ew = Register-WmiEvent 
+              -Namespace root\virtualization\v2 
+              -Query "SELECT * FROM __InstanceModificationEvent WITHIN 2 WHERE TargetInstance ISA 'Msvm_ComputerSystem' AND TargetInstance.EnabledState = 2" 
+              -Action {
+                $e = $EventArgs.NewEvent.TargetInstance | Select HealthState, EnabledState, RequestedState, ElementName, Name;
+                Write-Host ($e | ConvertTo-Json -Compress)
+              }
+        """.replace(
+            "\n", ""
+        ).encode()
+        logger.debug("Event command %s", event_command)
+        self.watcher.stdin.write(event_command)
+        self.watcher.stdin.write(b"\r\n")
 
-                # Only running machines have serial ports
-                if data["EnabledState"] not in ["Starting", "Enabled"]:
-                    continue
+        logger.debug("Waiting for watcher process stdin to drain")
+        await self.watcher.stdin.drain()
 
-                data["ComPort1Path"] = self._get_serial_path(data["Name"])
+        logger.info("Processing events")
+        while True:
+            logger.debug("Waiting for event")
+            # TODO handle powershell crashes
+            event = await self.watcher.stdout.readline()
+            event = event.decode()
+            if not event:
+                break
+            event = event.strip()
+            if event[0] != "{" or event[-1] != "}":
+                logger.debug("%s", event)
+                continue
+            logger.info("Got event %s", event)
+            data = json.loads(event)
 
-                yield VMInfo(
-                    id=data["Name"],
-                    name=data["ElementName"],
-                    serial_port_path=data["ComPort1Path"],
-                )
-            else:
-                logger.info("%s", json.dumps(raw_data))
+            data["ComPort1Path"] = await self._get_serial_path(data["Name"])
 
-    def list_virtual_machine_ports(self):
-        vm_data = self._ps_exec(
+            yield VMInfo(
+                id=data["Name"],
+                name=data["ElementName"],
+                serial_port_path=data["ComPort1Path"],
+            )
+
+    async def list_virtual_machine_ports(self):
+        vm_data = await self._ps_exec(
             "Get-VM"
             " | Select Id, VMName, @{n='Path'; e={$_.ComPort1.Path}}"
             " | Where-Object {$_.Path}"
-            " | ConvertTo-Json"
         )
 
         return [
@@ -166,14 +169,14 @@ class MachineEventManager:
             for vm in vm_data
         ]
 
-    def _get_serial_path(self, vm_id: VmGuid) -> str:
+    async def _get_serial_path(self, vm_id: VmGuid) -> str:
         if not re.match(r"^[A-Fa-f0-9-]+$", vm_id):
             logger.warning("Not a VmGuid %s", vm_id)
             raise ValueError("VM GUID required")
 
         serial_port_path = ""
         try:
-            serial_port_path = self._ps_exec(
+            serial_port_path = await self._ps_exec(
                 f"(Get-VM -Id {vm_id}).ComPort1.Path"
             )
         except AttributeError as e:
@@ -183,14 +186,18 @@ class MachineEventManager:
         return serial_port_path
 
     @staticmethod
-    def _ps_exec(command: str):
+    async def _ps_exec(command: str) -> str:
+        command += " | ConvertTo-Json"
+        logger.debug("PS EXEC %s", command)
         start = time.time()
-        exec_result = subprocess.check_output(
-            ["powershell", "-Command", command], text=True
-        ).strip()
+        exec_result = await asyncio.create_subprocess_exec(
+            "powershell", "-Command", command, stdout=asyncio.subprocess.PIPE
+        )
 
-        decoded_result = json.loads(exec_result)
-        logger.debug("Completed `%s` in %d", command, time.time() - start)
+        stdout = await exec_result.stdout.read()
+        logger.debug("PS OUT %s", stdout)
+        decoded_result = json.loads(stdout.decode().strip())
+        logger.debug("Completed `%s` in %.2f seconds", command, time.time() - start)
         return decoded_result
 
 
@@ -204,7 +211,7 @@ class SerialWatcher:
         self._shutdown.set()
 
     def watch(self, vm: VMInfo) -> None:
-        logger.info("Attempting to start watcher for %s", vm.name)
+        logger.info("Attempting to start watcher for %s (%s)", vm.name, vm.id)
         if vm.id in self._watchers:
             if self._watchers[vm.id].is_alive():
                 logger.warning("Logger already running for %s", vm.id)
@@ -232,60 +239,75 @@ class SerialWatcher:
 
     @classmethod
     def _watch_events(cls, vm: VMInfo, out_q: queue.Queue, shutdown: threading.Event):
-        try:
-            with open(vm.serial_port_path, "r") as pipe:
-                while not shutdown.is_set() and (event := pipe.readline()):
-                    out_q.put(
-                        {
-                            "time": datetime.datetime.now().isoformat(),
-                            "id": vm.id,
-                            "hostname": vm.name,
-                            "message": event,
-                        }
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+        initial_tries = 10
+        remaining_tries = initial_tries
+        while remaining_tries > 0:
+            try:
+                with open(vm.serial_port_path, "r") as pipe:
+                    logger.info("Successfully opened %s", vm.serial_port_path)
+                    # TODO convert to async so reading pipe doesn't block shutdown event
+                    while not shutdown.is_set() and (event := pipe.readline()):
+                        message = ansi_escape.sub("", event.strip("\r\n"))
+                        logger.debug("Got %s", message)
+                        if not message:
+                            continue
+                        out_q.put(
+                            {
+                                "time": datetime.datetime.now().isoformat(),
+                                "id": vm.id,
+                                "hostname": vm.name,
+                                "message": message,
+                            }
+                        )
+            # Not sure if there's any other case this can happen besides VM is powered off
+            except FileNotFoundError:
+                # These cases can be ignored since the event watching code will catch startup events and retry
+                # the port watcher thread for that VM
+                logger.error(
+                    "Pipe %s (for %s/%s) doesn't currently exist. VM likely isn't running",
+                    vm.serial_port_path,
+                    vm.name,
+                    vm.id,
+                )
+                break
+            except OSError as e:
+                # When the pipe is already open somewhere else
+                if e.errno == 22:
+                    remaining_tries -= 1
+                    logger.info(
+                        "Pipe %s (for %s/%s) isn't available. Retrying",
+                        vm.serial_port_path,
+                        vm.name,
+                        vm.id,
                     )
-        # Not sure if there's any other case this can happen besides VM is powered off
-        except FileNotFoundError:
-            # These cases can be ignored since the event watching code will catch startup events and retry
-            # the port watcher thread for that VM
-            logger.error(
-                "Pipe %s doesn't currently exist. VM likely isn't running",
+                    # .05 -> [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6]
+                    time.sleep(0.05 * 2 ** (initial_tries - remaining_tries))
+                    continue
+
+                logger.debug("Error attributes %s", dir(e))
+                logger.exception(e)
+                break
+
+        if remaining_tries == 0:
+            logger.warning(
+                "Ran out of retries waiting on %s (for %s/%s)",
                 vm.serial_port_path,
+                vm.name,
+                vm.id,
             )
-        # TODO handle OSError 22/ctypes.WinError() 6 when pipe is already opened somewhere else
-        # There are probably other reasons to get this generic error besides ^^
-        except OSError as e:
-            logger.debug("Error attributes %s", dir(e))
-            logger.exception(e)
 
     def _prune_watchers(self):
         for vm_id in list(self._watchers.keys()):
             if not self._watchers[vm_id].is_alive():
                 logger.warning("Removing dead watcher for %s", vm_id)
+                self._watchers[vm_id].join()
                 del self._watchers[vm_id]
 
 
-if __name__ == "__main__":
-    logging.basicConfig(
-        format="%(asctime)s:%(levelname)1s:%(process)8d:%(name)s: %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S%z",
-        level=logging.DEBUG,
-    )
-
-    manager = MachineEventManager()
+async def watch_events(manager: MachineEventManager) -> None:
     events = manager.events()
-    shipper = LogShipper()
-    shipper.start()
-    watcher = SerialWatcher(shipper.queue)
-
-    vm_list = manager.list_virtual_machine_ports()
-    logger.info("Found %s with COM ports", [v.name for v in vm_list])
-    for vm_info in vm_list:
-        watcher.watch(vm_info)
-
-    # TODO event watcher should start before static list to avoid race condition
-    # e.g. VM start after list before event watcher is started
-    while True:
-        vm_event = next(events)
+    async for vm_event in events:
         logger.info("Got vm_event %s", vm_event)
 
         if not vm_event.serial_port_path:
@@ -293,3 +315,33 @@ if __name__ == "__main__":
             continue
 
         watcher.watch(vm_event)
+
+
+async def process_events():
+    manager = MachineEventManager()
+    # TODO event watcher should start before static list to avoid race condition
+    # e.g. VM start after list before event watcher is started
+    event_task = asyncio.create_task(watch_events(manager))
+
+    vm_list = await manager.list_virtual_machine_ports()
+    logger.info("Found %s with COM ports", [v.name for v in vm_list])
+    for vm_info in vm_list:
+        watcher.watch(vm_info)
+
+    logger.info("Waiting on event watcher task")
+    await event_task
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        format="%(asctime)s:%(levelname)7s:%(process)8d:%(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+        level=logging.DEBUG,
+    )
+
+    shipper = LogShipper()
+    shipper.start()
+    watcher = SerialWatcher(shipper.queue)
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(process_events())
