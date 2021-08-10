@@ -166,6 +166,22 @@ class MachineEventManager:
             for vm in vm_data
         ]
 
+    def _get_serial_path(self, vm_id: VmGuid) -> str:
+        if not re.match(r"^[A-Fa-f0-9-]+$", vm_id):
+            logger.warning("Not a VmGuid %s", vm_id)
+            raise ValueError("VM GUID required")
+
+        serial_port_path = ""
+        try:
+            serial_port_path = self._ps_exec(
+                f"(Get-VM -Id {vm_id}).ComPort1.Path"
+            )
+        except AttributeError as e:
+            logger.warning("Couldn't get serial port data for %s", vm_id)
+            logger.error(e)
+
+        return serial_port_path
+
     @staticmethod
     def _ps_exec(command: str):
         start = time.time()
@@ -176,34 +192,6 @@ class MachineEventManager:
         decoded_result = json.loads(exec_result)
         logger.debug("Completed `%s` in %d", command, time.time() - start)
         return decoded_result
-
-    def _get_serial_path(self, vm_id: VmGuid) -> str:
-        if not re.match(r"^[A-Fa-f0-9-]+$", vm_id):
-            logger.warning("Not a VmGuid %s", vm_id)
-            raise ValueError("VM GUID required")
-
-        serial_port_path = ""
-        try:
-            # TODO use PowerShell
-            serial_port_path = (
-                (
-                    [
-                        p
-                        for p in self.wmi.Msvm_ComputerSystem(Name=vm_id)[
-                            0
-                        ].associators(wmi_result_class="Msvm_SerialPort")
-                        if p.Caption == "COM 1"
-                    ]
-                    + [None]
-                )[0]
-                .associators(wmi_result_class="Msvm_SerialPortSettingData")[0]
-                .Connection[0]
-            )
-        except AttributeError as e:
-            logger.warning("Couldn't get serial port data for %s", vm_id)
-            logger.error(e)
-
-        return serial_port_path
 
 
 class SerialWatcher:
@@ -223,8 +211,8 @@ class SerialWatcher:
                 return
 
             logger.info(
-                "Serial watcher is terminated for %s",
-                vm.id,
+                "Serial watcher is terminated for %s and will be replaced",
+                vm.name,
             )
             self._watchers[vm.id].join()
             del self._watchers[vm.id]
@@ -240,13 +228,21 @@ class SerialWatcher:
 
         out_t.start()
         self._watchers[vm.id] = out_t
+        self._prune_watchers()
 
     @classmethod
     def _watch_events(cls, vm: VMInfo, out_q: queue.Queue, shutdown: threading.Event):
         try:
             with open(vm.serial_port_path, "r") as pipe:
-                while not shutdown.is_set():
-                    cls._copy_pipe(vm, pipe, out_q)
+                while not shutdown.is_set() and (event := pipe.readline()):
+                    out_q.put(
+                        {
+                            "time": datetime.datetime.now().isoformat(),
+                            "id": vm.id,
+                            "hostname": vm.name,
+                            "message": event,
+                        }
+                    )
         # Not sure if there's any other case this can happen besides VM is powered off
         except FileNotFoundError:
             # These cases can be ignored since the event watching code will catch startup events and retry
@@ -258,26 +254,21 @@ class SerialWatcher:
         # TODO handle OSError 22/ctypes.WinError() 6 when pipe is already opened somewhere else
         # There are probably other reasons to get this generic error besides ^^
         except OSError as e:
+            logger.debug("Error attributes %s", dir(e))
             logger.exception(e)
 
-    @staticmethod
-    def _copy_pipe(vm: VMInfo, in_pipe: io.TextIOWrapper, out_queue: queue.Queue):
-        while event := in_pipe.readline():
-            out_queue.put(
-                {
-                    "time": datetime.datetime.now().isoformat(),
-                    "id": vm.id,
-                    "hostname": vm.name,
-                    "message": event,
-                }
-            )
+    def _prune_watchers(self):
+        for vm_id in list(self._watchers.keys()):
+            if not self._watchers[vm_id].is_alive():
+                logger.warning("Removing dead watcher for %s", vm_id)
+                del self._watchers[vm_id]
 
 
 if __name__ == "__main__":
     logging.basicConfig(
         format="%(asctime)s:%(levelname)1s:%(process)8d:%(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S%z",
-        level=logging.INFO,
+        level=logging.DEBUG,
     )
 
     manager = MachineEventManager()
