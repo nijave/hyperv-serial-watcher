@@ -155,7 +155,7 @@ class MachineEventEmitter:
             "-Command",
             "-",
             stdin=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
         )
 
@@ -177,6 +177,20 @@ class MachineEventEmitter:
 
         logger.debug("Waiting for watcher process stdin to drain")
         await self.watcher.stdin.drain()
+
+        async def check_errors():
+            while not self.watcher.stderr.at_eof():
+                err = await self.watcher.stderr.readline()
+                err = err.decode().strip()
+                if err:
+                    logger.warning("%s", err)
+                if " FullyQualifiedErrorId " in err:
+                    logger.error(
+                        "Event watcher process logged an error. Terminating process"
+                    )
+                    self.watcher.terminate()
+
+        asyncio.create_task(check_errors())
         await self._signal_ready()
 
     async def _get_serial_path(self, vm_id: VmGuid) -> str:
