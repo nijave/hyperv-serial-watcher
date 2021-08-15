@@ -9,7 +9,7 @@ import threading
 import time
 import typing
 from dataclasses import dataclass
-from urllib.request import Request, urlopen
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class LogShipper:
         self.queue = queue.Queue()
         self._socket_mutex = threading.Lock()
         self._worker = threading.Thread(target=self._process_events)
+        self._session = requests.Session()
         if start:
             self._worker.start()
 
@@ -47,19 +48,13 @@ class LogShipper:
 
     def _process_events(self):
         while event := self.queue.get():
-            payload = json.dumps(event).encode("utf-8")
-            self._write(payload)
+            self._write(event)
 
-    @staticmethod
-    def _write(data):
-        # TODO, check for errors? retry? use requests module?
-        urlopen(
-            Request(
-                url=f"http://{sys.argv[1]}",
-                method="POST",
-                headers={"Content-Type": "application/json"},
-                data=data,
-            )
+    def _write(self, data):
+        # TODO, check for errors? retry?
+        self._session.post(
+            f"http://{sys.argv[1]}",
+            json=data,
         )
 
 
