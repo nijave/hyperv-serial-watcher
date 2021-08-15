@@ -9,6 +9,8 @@ import threading
 import time
 import typing
 from dataclasses import dataclass
+
+import aiofiles
 import requests
 
 logger = logging.getLogger(__name__)
@@ -247,7 +249,7 @@ class SerialTail:
     def watch(self, vm: VMInfo) -> None:
         logger.info("Attempting to start watcher for %s (%s)", vm.name, vm.id)
         if vm.id in self._watchers:
-            if self._watchers[vm.id].is_alive():
+            if not self._watchers[vm.id].done():
                 logger.warning("Logger already running for %s", vm.id)
                 return
 
@@ -255,34 +257,22 @@ class SerialTail:
                 "Serial watcher is terminated for %s and will be replaced",
                 vm.name,
             )
-            self._watchers[vm.id].join()
+            self._watchers[vm.id].result()
             del self._watchers[vm.id]
 
-        out_t = threading.Thread(
-            target=self._watch_events,
-            kwargs=dict(
-                vm=vm,
-                out_q=self._queue,
-            ),
-        )
-
-        out_t.daemon = True
-
-        out_t.start()
-        self._watchers[vm.id] = out_t
+        self._watchers[vm.id] = asyncio.create_task(self._watch_events(vm, self._queue))
         self._prune_watchers()
 
     @classmethod
-    def _watch_events(cls, vm: VMInfo, out_q: queue.Queue):
+    async def _watch_events(cls, vm: VMInfo, out_q: queue.Queue):
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
         initial_tries = 10
         remaining_tries = initial_tries
         while remaining_tries > 0:
             try:
-                with open(vm.serial_port_path, "r") as pipe:
+                async with aiofiles.open(vm.serial_port_path, "r") as pipe:
                     logger.info("Successfully opened %s", vm.serial_port_path)
-                    # TODO convert to async so reading pipe doesn't block shutdown event
-                    while event := pipe.readline():
+                    while event := await pipe.readline():
                         message = ansi_escape.sub("", event.strip("\r\n"))
                         logger.debug("Got %s", message)
                         if not message:
@@ -336,9 +326,10 @@ class SerialTail:
 
     def _prune_watchers(self, prune_all: bool = False):
         for vm_id in list(self._watchers.keys()):
-            if not self._watchers[vm_id].is_alive():
+            if self._watchers[vm_id].done() or prune_all:
                 logger.warning("Removing dead watcher for %s", vm_id)
-                self._watchers[vm_id].join()
+                self._watchers[vm_id].cancel()
+                self._watchers[vm_id].result()
                 del self._watchers[vm_id]
 
 
