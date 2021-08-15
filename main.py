@@ -220,9 +220,18 @@ class MachineEventEmitter:
             "powershell", "-Command", command, stdout=asyncio.subprocess.PIPE
         )
 
-        stdout = await exec_result.stdout.read()
-        logger.debug("PS OUT %s", stdout)
-        decoded_result = json.loads(stdout.decode().strip())
+        stdout, _ = await exec_result.communicate()
+        stdout = stdout.decode().strip()
+        for line in stdout.splitlines():
+            logger.debug("PS OUT %s", line)
+
+        rc = exec_result.returncode
+        if rc != 0:
+            logger.warning("PS ERR %d", rc)
+            decoded_result = ""
+        else:
+            decoded_result = json.loads(stdout)
+
         logger.debug("Completed `%s` in %.2f seconds", command, time.time() - start)
         return decoded_result
 
