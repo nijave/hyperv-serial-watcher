@@ -39,7 +39,11 @@ class LogShipper:
         self._worker.start()
 
     def stop(self):
+        logger.debug("Putting log shipper stop message")
         self.queue.put(None)
+        logger.info("Waiting for log queue to empty")
+        self._worker.join()
+        logger.debug("Log queue is empty")
 
     def _process_events(self):
         while event := self.queue.get():
