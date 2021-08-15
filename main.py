@@ -145,7 +145,9 @@ class MachineEventEmitter:
         ]
 
     async def _signal_ready(self):
+        # WMI Event subscription has 2 second interval
         await asyncio.sleep(2)
+        logger.info("Setting event watcher task ready")
         self.ready.set()
 
     async def _create_event_monitor_process(self):
@@ -339,7 +341,7 @@ async def process_events(*, event_emitter: MachineEventEmitter) -> None:
 
     logger.info("Waiting on event watcher task")
     await event_task
-
+    logger.info("Event watcher task completed")
 
 async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
     events = event_emitter.events()
