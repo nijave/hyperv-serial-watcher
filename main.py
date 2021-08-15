@@ -332,11 +332,11 @@ async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
     async for vm_event in events:
         logger.info("Got vm_event %s", vm_event)
 
-        if not vm_event.serial_port_path:
-            logger.warning("No serial port found for %s", vm_event.name)
-            continue
+if __name__ == "__main__":
+    import signal
 
-        watcher.watch(vm_event)
+    # see https://stackoverflow.com/a/37420223/2751619
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     if log_level not in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"):
