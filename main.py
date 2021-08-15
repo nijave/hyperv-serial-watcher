@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import queue
 import re
 import sys
@@ -333,6 +334,18 @@ class SerialTail:
                 del self._watchers[vm_id]
 
 
+async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
+    events = event_emitter.events()
+    async for vm_event in events:
+        logger.info("Got vm_event %s", vm_event)
+
+        if not vm_event.serial_port_path:
+            logger.warning("No serial port found for %s", vm_event.name)
+            continue
+
+        watcher.watch(vm_event)
+
+
 async def process_events(*, event_emitter: MachineEventEmitter) -> None:
     event_task = asyncio.create_task(watch_events(event_emitter=event_emitter))
 
@@ -346,10 +359,6 @@ async def process_events(*, event_emitter: MachineEventEmitter) -> None:
     await event_task
     logger.info("Event watcher task completed")
 
-async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
-    events = event_emitter.events()
-    async for vm_event in events:
-        logger.info("Got vm_event %s", vm_event)
 
 if __name__ == "__main__":
     import signal
@@ -372,7 +381,7 @@ if __name__ == "__main__":
     watcher = SerialTail(message_queue=shipper.queue)
 
     loop = asyncio.get_event_loop()
-        loop.run_until_complete(process_events(event_emitter=mem))
+    loop.run_until_complete(process_events(event_emitter=mem))
 
     logger.info("Event loop complete")
     logger.info("Shutting down watcher")
