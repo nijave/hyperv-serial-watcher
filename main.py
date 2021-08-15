@@ -232,6 +232,9 @@ class SerialTail:
         self._watchers = {}
         self._queue = message_queue
 
+    def shutdown(self):
+        self._prune_watchers(prune_all=True)
+
     def watch(self, vm: VMInfo) -> None:
         logger.info("Attempting to start watcher for %s (%s)", vm.name, vm.id)
         if vm.id in self._watchers:
@@ -322,7 +325,7 @@ class SerialTail:
         else:
             logger.info("Stopping logger for %s", vm.serial_port_path)
 
-    def _prune_watchers(self):
+    def _prune_watchers(self, prune_all: bool = False):
         for vm_id in list(self._watchers.keys()):
             if not self._watchers[vm_id].is_alive():
                 logger.warning("Removing dead watcher for %s", vm_id)
@@ -369,10 +372,11 @@ if __name__ == "__main__":
     watcher = SerialTail(message_queue=shipper.queue)
 
     loop = asyncio.get_event_loop()
-    try:
         loop.run_until_complete(process_events(event_emitter=mem))
-    except KeyboardInterrupt:
-        logger.info("Got shutdown signal")
-        logger.info("Stopping event watcher")
-        # TODO better shutdown handling
-        mem.watcher.kill()
+
+    logger.info("Event loop complete")
+    logger.info("Shutting down watcher")
+    watcher.shutdown()
+
+    logger.info("Shutting down log shipper")
+    shipper.stop()
