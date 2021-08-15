@@ -338,12 +338,14 @@ async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
 
         watcher.watch(vm_event)
 
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    if log_level not in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"):
+        log_level = "INFO"
 
-if __name__ == "__main__":
     logging.basicConfig(
         format="%(asctime)s:%(levelname)7s:%(process)8d:%(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S%z",
-        level=logging.INFO,
+        level=getattr(logging, log_level),
     )
 
     mem = MachineEventEmitter()
