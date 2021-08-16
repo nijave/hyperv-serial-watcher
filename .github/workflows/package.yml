@@ -5,6 +5,63 @@ env:
   pyoxidizer-version: 0.17.0
 
 jobs:
+  formatting:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Pull python cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-dev-${{ hashFiles('**/requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-dev-
+
+      - name: Setup python 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+          architecture: x64
+
+      - name: Install development dependencies
+        run: pip install --user -r requirements-dev.txt
+      
+      - name: Check formatting
+        run: black --check *.py
+
+  lint:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Pull python cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-all-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-all-
+
+      - name: Setup python 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+          architecture: x64
+
+      - name: Install development dependencies
+        run: pip install --user -r requirements-dev.txt
+
+      - name: Install runtime dependencies
+        run: pip install --user -r requirements.txt
+      
+      - name: Check formatting
+        run: pylint -d fixme $(Get-ChildItem -Recurse -Name *.py)
+
   package:
     runs-on: windows-latest
     steps:
