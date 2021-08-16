@@ -133,12 +133,19 @@ jobs:
         with:
           name: windows-build
           path: windows.zip
-      
+
+  release:
+    needs:
+      - formatting
+      - lint
+      - package
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
       - name: Create release timestamp
         shell: pwsh
         id: release-tag
         run: Write-Output "::set-output name=timestamp::$(Get-Date -Format yyyyMMdd-HHmm)"
-        if: github.ref == 'refs/heads/main'
 
       - name: Create release
         uses: ncipollo/release-action@v1
@@ -147,4 +154,3 @@ jobs:
           tag: ${{ steps.release-tag.outputs.timestamp }}
           artifacts: "windows.zip"
           token: ${{ secrets.GITHUB_TOKEN }}
-        if: github.ref == 'refs/heads/main'
