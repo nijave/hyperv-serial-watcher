@@ -1,0 +1,156 @@
+name: Pyoxidizer package
+on: [push]
+
+env:
+  pyoxidizer-version: 0.17.0
+
+jobs:
+  formatting:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Pull python cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-dev-${{ hashFiles('**/requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-dev-
+
+      - name: Setup python 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+          architecture: x64
+
+      - name: Install development dependencies
+        run: pip install --user -r requirements-dev.txt
+      
+      - name: Check formatting
+        run: black --check *.py
+
+  lint:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Pull python cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-all-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-all-
+
+      - name: Setup python 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+          architecture: x64
+
+      - name: Install development dependencies
+        run: pip install --user -r requirements-dev.txt
+
+      - name: Install runtime dependencies
+        run: pip install --user -r requirements.txt
+      
+      - name: Check formatting
+        run: pylint -d fixme $(Get-ChildItem -Recurse -Name *.py)
+
+  package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Pull rust cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-pyoxidizer-${{ env.pyoxidizer-version }}
+      
+      - name: Pull python cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-dev-${{ hashFiles('**/requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-dev-
+
+      - name: Setup python 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+          architecture: x64
+      
+      - name: Update pip
+        run: python -m pip install -U --user pip setuptools wheel
+      
+      - name: Setup rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Check if pyoxidizer is installed
+        id: pyoxidizer-present
+        shell: pwsh
+        run: Get-Command pyoxidizer
+        continue-on-error: true
+
+      - name: Install pyoxidizer
+        uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: --version ${{ env.pyoxidizer-version }} pyoxidizer
+        if: steps.pyoxidizer-present.outcome == 'failure'
+      
+      - name: Check pyoxidizer version
+        run: pyoxidizer --version
+
+      - name: Install python dev dependencies
+        run: python -m pip install --user -r requirements-dev.txt
+      
+      - name: Pyoxidize
+        run: pyoxidizer build --release
+      
+      - name: Package artifacts
+        shell: pwsh
+        run: Compress-Archive -Path build\x86_64-pc-windows-msvc\release\install -DestinationPath windows.zip
+      
+      - name: Upload pyoxidizer artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: windows-build
+          path: windows.zip
+
+  release:
+    needs:
+      - formatting
+      - lint
+      - package
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - name: Create release timestamp
+        shell: pwsh
+        id: release-tag
+        run: Write-Output "::set-output name=timestamp::$(Get-Date -Format yyyyMMdd-HHmm)"
+
+      - name: Create release
+        uses: ncipollo/release-action@v1
+        with:
+          name: hyperv-serial-watcher-${{ steps.release-tag.outputs.timestamp }}
+          tag: ${{ steps.release-tag.outputs.timestamp }}
+          artifacts: "windows.zip"
+          token: ${{ secrets.GITHUB_TOKEN }}

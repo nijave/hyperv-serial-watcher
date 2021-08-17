@@ -288,8 +288,8 @@ class SerialTail:
                         )
             # Not sure if there's any other case this can happen besides VM is powered off
             except FileNotFoundError:
-                # These cases can be ignored since the event watching code will catch startup events and retry
-                # the port watcher thread for that VM
+                # These cases can be ignored since the event watching code will catch
+                # startup events and retry the port watcher thread for that VM
                 logger.info(
                     "Pipe %s (for %s/%s) doesn't currently exist. VM likely isn't running",
                     vm.serial_port_path,
