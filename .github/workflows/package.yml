@@ -59,7 +59,7 @@ jobs:
       - name: Install runtime dependencies
         run: pip install --user -r requirements.txt
       
-      - name: Check formatting
+      - name: Lint
         run: pylint -d fixme $(Get-ChildItem -Recurse -Name *.py)
 
   package:
@@ -139,13 +139,18 @@ jobs:
       - formatting
       - lint
       - package
-    if: github.ref == 'refs/heads/main'
+    # if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - name: Create release timestamp
         shell: pwsh
         id: release-tag
         run: Write-Output "::set-output name=timestamp::$(Get-Date -Format yyyyMMdd-HHmm)"
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: windows-build
 
       - name: Create release
         uses: ncipollo/release-action@v1
