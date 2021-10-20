@@ -383,16 +383,34 @@ if __name__ == "__main__":
         level=getattr(logging, log_level),
     )
 
-    mem = MachineEventEmitter()
-    shipper = LogShipper(start=True)
-    watcher = SerialTail(message_queue=shipper.queue)
+    report_errors = False
+    if os.environ.get("ROLLBAR_API_TOKEN"):
+        logger.info("Initializing rollbar")
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(process_events(event_emitter=mem))
+        import rollbar
 
-    logger.info("Event loop complete")
-    logger.info("Shutting down watcher")
-    watcher.shutdown()
+        rollbar.init(
+            os.environ.get("ROLLBAR_API_TOKEN"),
+            os.environ.get("ENVIRONMENT", "production"),
+        )
+        report_errors = True
 
-    logger.info("Shutting down log shipper")
-    shipper.stop()
+    try:
+        mem = MachineEventEmitter()
+        shipper = LogShipper(start=True)
+        watcher = SerialTail(message_queue=shipper.queue)
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(process_events(event_emitter=mem))
+
+        logger.info("Event loop complete")
+        logger.info("Shutting down watcher")
+        watcher.shutdown()
+
+        logger.info("Shutting down log shipper")
+        shipper.stop()
+    except Exception as exc:  # pylint: disable=broad-except
+        if report_errors:
+            rollbar.report_exc_info()
+        logger.error(exc)
+        sys.exit(1)
