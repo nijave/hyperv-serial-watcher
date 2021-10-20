@@ -271,21 +271,28 @@ class SerialTail:
         remaining_tries = initial_tries
         while remaining_tries > 0:
             try:
-                async with aiofiles.open(vm.serial_port_path, "r") as pipe:
+                async with aiofiles.open(
+                    vm.serial_port_path, mode="r", encoding="utf8"
+                ) as pipe:
                     logger.info("Successfully opened %s", vm.serial_port_path)
-                    while event := await pipe.readline():
-                        message = ansi_escape.sub("", event.strip("\r\n"))
-                        logger.debug("Got %s", message)
-                        if not message:
-                            continue
-                        out_q.put(
-                            {
-                                "time": datetime.datetime.now().isoformat(),
-                                "id": vm.id,
-                                "hostname": vm.name,
-                                "message": message,
-                            }
-                        )
+                    try:
+                        while event := await pipe.readline():
+                            message = ansi_escape.sub("", event.strip("\r\n"))
+                            logger.debug("Got %s", message)
+                            if not message:
+                                continue
+                            out_q.put(
+                                {
+                                    "time": datetime.datetime.now().isoformat(),
+                                    "id": vm.id,
+                                    "hostname": vm.name,
+                                    "message": message,
+                                }
+                            )
+                    except UnicodeDecodeError as e:
+                        logger.exception(e)
+                        remaining_tries -= 1
+                        continue
             # Not sure if there's any other case this can happen besides VM is powered off
             except FileNotFoundError:
                 # These cases can be ignored since the event watching code will catch
