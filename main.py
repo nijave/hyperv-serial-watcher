@@ -206,7 +206,7 @@ class MachineEventEmitter:
             logger.warning("Not a VmGuid %s", vm_id)
             raise ValueError("VM GUID required")
 
-        serial_port_path = ""
+        serial_port_path = None
         try:
             serial_port_path = await self._ps_exec(
                 f"(Get-VM -Id {vm_id}).ComPort1.Path"
@@ -231,7 +231,11 @@ class MachineEventEmitter:
         for line in stdout.splitlines():
             logger.debug("PS OUT %s", line)
 
-        rc = exec_result.returncode
+        if "FullyQualifiedErrorId" in stdout:
+            rc = exec_result.returncode or -1
+        else:
+            rc = exec_result.returncode
+
         if rc != 0:
             logger.warning("PS ERR %d", rc)
             decoded_result = ""
