@@ -26,6 +26,14 @@ class VMInfo:
     serial_port_path: str
 
 
+def json_safe_loads(data: str) -> typing.Union[dict, list, str, int, bool, None]:
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        logger.warning("Failed to JSON decode %s", data)
+        return None
+
+
 class LogShipper:
     """
     Send logs over tcp
@@ -121,7 +129,7 @@ class MachineEventEmitter:
                 logger.debug("%s", event)
                 continue
             logger.info("Got event %s", event)
-            data = json.loads(event)
+            data = json_safe_loads(event)
 
             data["ComPort1Path"] = await self._get_serial_path(data["Name"])
 
@@ -238,13 +246,9 @@ class MachineEventEmitter:
 
         if rc != 0:
             logger.warning("PS ERR %d", rc)
-            decoded_result = ""
+            decoded_result = None
         else:
-            try:
-                decoded_result = json.loads(stdout)
-            except json.JSONDecodeError:
-                logger.warning("Failed to decode %s output %s", command, stdout)
-                decoded_result = ""
+            decoded_result = json_safe_loads(stdout)
 
         logger.debug("Completed `%s` in %.2f seconds", command, time.time() - start)
         return decoded_result
