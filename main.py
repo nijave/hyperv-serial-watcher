@@ -125,11 +125,14 @@ class MachineEventEmitter:
 
             data["ComPort1Path"] = await self._get_serial_path(data["Name"])
 
-            yield VMInfo(
-                id=data["Name"],
-                name=data["ElementName"],
-                serial_port_path=data["ComPort1Path"],
-            )
+            if not data["ComPort1Path"]:
+                logger.error("Skipping invalid path for %s", data["ElementName"])
+            else:
+                yield VMInfo(
+                    id=data["Name"],
+                    name=data["ElementName"],
+                    serial_port_path=data["ComPort1Path"],
+                )
 
     async def list_virtual_machine_ports(self):
         vm_data = await self._ps_exec(
@@ -233,7 +236,11 @@ class MachineEventEmitter:
             logger.warning("PS ERR %d", rc)
             decoded_result = ""
         else:
-            decoded_result = json.loads(stdout)
+            try:
+                decoded_result = json.loads(stdout)
+            except json.JSONDecodeError:
+                logger.warning("Failed to decode %s output %s", command, stdout)
+                decoded_result = ""
 
         logger.debug("Completed `%s` in %.2f seconds", command, time.time() - start)
         return decoded_result
