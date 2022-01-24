@@ -26,6 +26,14 @@ class VMInfo:
     serial_port_path: str
 
 
+def json_safe_loads(data: str) -> typing.Union[dict, list, str, int, bool, None]:
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        logger.warning("Failed to JSON decode %s", data)
+        return None
+
+
 class LogShipper:
     """
     Send logs over tcp
@@ -121,15 +129,18 @@ class MachineEventEmitter:
                 logger.debug("%s", event)
                 continue
             logger.info("Got event %s", event)
-            data = json.loads(event)
+            data = json_safe_loads(event)
 
             data["ComPort1Path"] = await self._get_serial_path(data["Name"])
 
-            yield VMInfo(
-                id=data["Name"],
-                name=data["ElementName"],
-                serial_port_path=data["ComPort1Path"],
-            )
+            if not data["ComPort1Path"]:
+                logger.error("Skipping invalid path for %s", data["ElementName"])
+            else:
+                yield VMInfo(
+                    id=data["Name"],
+                    name=data["ElementName"],
+                    serial_port_path=data["ComPort1Path"],
+                )
 
     async def list_virtual_machine_ports(self):
         vm_data = await self._ps_exec(
@@ -203,7 +214,7 @@ class MachineEventEmitter:
             logger.warning("Not a VmGuid %s", vm_id)
             raise ValueError("VM GUID required")
 
-        serial_port_path = ""
+        serial_port_path = None
         try:
             serial_port_path = await self._ps_exec(
                 f"(Get-VM -Id {vm_id}).ComPort1.Path"
@@ -228,12 +239,16 @@ class MachineEventEmitter:
         for line in stdout.splitlines():
             logger.debug("PS OUT %s", line)
 
-        rc = exec_result.returncode
+        if "FullyQualifiedErrorId" in stdout:
+            rc = exec_result.returncode or -1
+        else:
+            rc = exec_result.returncode
+
         if rc != 0:
             logger.warning("PS ERR %d", rc)
-            decoded_result = ""
+            decoded_result = None
         else:
-            decoded_result = json.loads(stdout)
+            decoded_result = json_safe_loads(stdout)
 
         logger.debug("Completed `%s` in %.2f seconds", command, time.time() - start)
         return decoded_result
