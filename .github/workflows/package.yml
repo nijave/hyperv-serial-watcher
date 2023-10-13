@@ -62,6 +62,9 @@ jobs:
       - name: Lint
         run: pylint -d fixme $(Get-ChildItem -Recurse -Name *.py)
 
+      - name: Check formatting
+        run: black --check $(Get-ChildItem -Recurse -Name *.py)
+
   package:
     runs-on: windows-latest
     steps:
