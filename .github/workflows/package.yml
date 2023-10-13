@@ -64,8 +64,9 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
+            ~/AppData/Local/pyoxidizer
             target/
-          key: ${{ runner.os }}-pyoxidizer-${{ env.pyoxidizer-version }}
+          key: ${{ runner.os }}-pyoxidizer-${{ env.pyoxidizer-version }}-1
 
       - name: Setup python 3.x
         uses: actions/setup-python@v4
