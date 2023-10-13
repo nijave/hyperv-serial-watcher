@@ -228,11 +228,12 @@ class MachineEventEmitter:
 
         logger.info("Registering WMI event")
         event_command = r"""
-            $ew = Register-WmiEvent 
-              -Namespace root\virtualization\v2 
-              -Query "SELECT * FROM __InstanceModificationEvent WITHIN 2 WHERE TargetInstance ISA 'Msvm_ComputerSystem' AND TargetInstance.EnabledState = 2" 
+            $ew = Register-CimIndicationEvent
+              -Namespace root\virtualization\v2
+              -Query "SELECT * FROM __InstanceModificationEvent WITHIN 2 WHERE TargetInstance ISA 'Msvm_ComputerSystem' AND TargetInstance.EnabledState = 2"
               -Action {
-                $e = $EventArgs.NewEvent.TargetInstance | Select HealthState, EnabledState, RequestedState, ElementName, Name;
+                $e = $EventArgs.NewEvent.TargetInstance |
+                    Select HealthState, EnabledState, OperationalStatus, StatusDescriptions, RequestedState, ElementName, Name;
                 Write-Host ($e | ConvertTo-Json -Compress)
               }
         """.replace(
