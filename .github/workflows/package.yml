@@ -2,33 +2,26 @@ name: Pyoxidizer package
 on: [push]
 
 env:
-  pyoxidizer-version: 0.24.0
+  PYTHON_VERSION: "3.10"
+  pyoxidizer-version: "0.24.0"
 
 jobs:
   formatting:
     runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Pull python cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-dev-${{ hashFiles('**/requirements-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-dev-
+        uses: actions/checkout@v3
 
       - name: Setup python 3.x
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
+          cache: pip
 
       - name: Install development dependencies
         run: pip install --user -r requirements-dev.txt
-      
+
       - name: Check formatting
         run: black --check *.py
 
@@ -36,71 +29,57 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Pull python cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-all-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-all-
+        uses: actions/checkout@v3
 
       - name: Setup python 3.x
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
+          cache: pip
 
       - name: Install development dependencies
         run: pip install --user -r requirements-dev.txt
 
       - name: Install runtime dependencies
         run: pip install --user -r requirements.txt
-      
+
       - name: Lint
         run: pylint -d fixme $(Get-ChildItem -Recurse -Name *.py)
+
+      - name: Check formatting
+        run: black --check $(Get-ChildItem -Recurse -Name *.py)
 
   package:
     runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Pull rust cache
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
+            ~/AppData/Local/pyoxidizer
             target/
-          key: ${{ runner.os }}-pyoxidizer-${{ env.pyoxidizer-version }}
-      
-      - name: Pull python cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-dev-${{ hashFiles('**/requirements-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-dev-
+          key: ${{ runner.os }}-pyoxidizer-${{ env.pyoxidizer-version }}-1
 
       - name: Setup python 3.x
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
+          cache: pip
       
       - name: Update pip
         run: python -m pip install -U --user pip setuptools wheel
       
       - name: Setup rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Check if pyoxidizer is installed
         id: pyoxidizer-present
@@ -109,10 +88,7 @@ jobs:
         continue-on-error: true
 
       - name: Install pyoxidizer
-        uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: --version ${{ env.pyoxidizer-version }} pyoxidizer
+        run: cargo install --version ${{ env.pyoxidizer-version }} pyoxidizer
         if: steps.pyoxidizer-present.outcome == 'failure'
       
       - name: Check pyoxidizer version
@@ -129,7 +105,7 @@ jobs:
         run: Compress-Archive -Path build\x86_64-pc-windows-msvc\release\install -DestinationPath windows.zip
       
       - name: Upload pyoxidizer artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: windows-build
           path: windows.zip
@@ -148,7 +124,7 @@ jobs:
         run: Write-Output "::set-output name=timestamp::$(Get-Date -Format yyyyMMdd-HHmm)"
 
       - name: Download release artifact
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v3
         with:
           name: windows-build
 

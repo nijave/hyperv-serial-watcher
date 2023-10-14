@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import typing
+import urllib
 from dataclasses import dataclass
 
 import aiofiles
@@ -39,34 +40,84 @@ class LogShipper:
     Send logs over tcp
     """
 
-    def __init__(self, start: bool = False):
+    CONNECT_TIMEOUT = 1
+    HTTP_TIMEOUT = 5
+
+    MAX_RETRIES = 10
+
+    def __init__(self, host: str = sys.argv[1], start: bool = False):
+        self._logger = logging.getLogger(self.__class__.__name__)
         self.queue = queue.Queue()
-        self._socket_mutex = threading.Lock()
-        self._worker = threading.Thread(target=self._process_events)
+        self._worker = threading.Thread(target=self._run_thread)
+        self._worker.daemon = True
+
+        self._host = host
+        if not (self._host.startswith("http://") or self._host.startswith("https://")):
+            self._host = f"http://{self._host}"
+
         self._session = requests.Session()
+        self._configure_retries()
+
         if start:
             self._worker.start()
 
-    def start(self):
-        self._worker.start()
+    def _configure_retries(self):
+        retries = requests.adapters.Retry(
+            total=self.MAX_RETRIES, status_forcelist=(429, 500, 502, 503, 504)
+        )
 
-    def stop(self):
-        logger.debug("Putting log shipper stop message")
-        self.queue.put(None)
-        logger.info("Waiting for log queue to empty")
-        self._worker.join()
-        logger.debug("Log queue is empty")
+        adapter_class = None
+        host_scheme = urllib.parse.urlparse(self._host).scheme
+        if host_scheme.startswith("http"):
+            adapter_class = requests.adapters.HTTPAdapter
+
+        if adapter_class is not None:
+            self._session.mount(
+                f"{host_scheme}://",
+                adapter_class(
+                    max_retries=retries,
+                ),
+            )
+        else:
+            self._logger.warning(
+                "unknown scheme %s. skipping retry configuration", host_scheme
+            )
+
+    def _run_thread(self):
+        while True:
+            try:
+                self._process_events()
+            except BaseException as e:  # pylint: disable=broad-except
+                self._logger.exception(e)
+                self._logger.info("restarting event processing after crash")
+                continue
+            break
 
     def _process_events(self):
         while event := self.queue.get():
             self._write(event)
 
     def _write(self, data):
-        # TODO, check for errors? retry?
-        self._session.post(
-            f"http://{sys.argv[1]}",
-            json=data,
-        )
+        try:
+            self._session.post(
+                self._host,
+                json=data,
+                # https://requests.readthedocs.io/en/latest/user/advanced/#timeouts
+                timeout=(self.CONNECT_TIMEOUT, self.HTTP_TIMEOUT),
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            self._logger.exception(e)
+
+    def start(self):
+        self._worker.start()
+
+    def stop(self):
+        self._logger.debug("putting log shipper stop message")
+        self.queue.put(None)
+        self._logger.info("waiting for log queue to empty")
+        self._worker.join()
+        self._logger.debug("log queue is empty")
+        self._session.close()
 
 
 class MachineEventEmitter:
@@ -177,11 +228,12 @@ class MachineEventEmitter:
 
         logger.info("Registering WMI event")
         event_command = r"""
-            $ew = Register-WmiEvent 
-              -Namespace root\virtualization\v2 
-              -Query "SELECT * FROM __InstanceModificationEvent WITHIN 2 WHERE TargetInstance ISA 'Msvm_ComputerSystem' AND TargetInstance.EnabledState = 2" 
+            $ew = Register-CimIndicationEvent
+              -Namespace root\virtualization\v2
+              -Query "SELECT * FROM __InstanceModificationEvent WITHIN 2 WHERE TargetInstance ISA 'Msvm_ComputerSystem' AND TargetInstance.EnabledState = 2"
               -Action {
-                $e = $EventArgs.NewEvent.TargetInstance | Select HealthState, EnabledState, RequestedState, ElementName, Name;
+                $e = $EventArgs.NewEvent.TargetInstance |
+                    Select HealthState, EnabledState, OperationalStatus, StatusDescriptions, RequestedState, ElementName, Name;
                 Write-Host ($e | ConvertTo-Json -Compress)
               }
         """.replace(
@@ -356,7 +408,9 @@ class SerialTail:
                 del self._watchers[vm_id]
 
 
-async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
+async def watch_events(
+    *, event_emitter: MachineEventEmitter, watcher: SerialTail
+) -> None:
     events = event_emitter.events()
     async for vm_event in events:
         logger.info("Got vm_event %s", vm_event)
@@ -368,8 +422,12 @@ async def watch_events(*, event_emitter: MachineEventEmitter) -> None:
         watcher.watch(vm_event)
 
 
-async def process_events(*, event_emitter: MachineEventEmitter) -> None:
-    event_task = asyncio.create_task(watch_events(event_emitter=event_emitter))
+async def process_events(
+    *, event_emitter: MachineEventEmitter, watcher: SerialTail
+) -> None:
+    event_task = asyncio.create_task(
+        watch_events(event_emitter=event_emitter, watcher=watcher)
+    )
 
     await event_emitter.ready.wait()
     vm_list = await event_emitter.list_virtual_machine_ports()
@@ -412,18 +470,18 @@ if __name__ == "__main__":
 
     try:
         mem = MachineEventEmitter()
-        shipper = LogShipper(start=True)
-        watcher = SerialTail(message_queue=shipper.queue)
+        _shipper = LogShipper(start=True)
+        _watcher = SerialTail(message_queue=_shipper.queue)
 
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(process_events(event_emitter=mem))
+        loop.run_until_complete(process_events(event_emitter=mem, watcher=_watcher))
 
         logger.info("Event loop complete")
         logger.info("Shutting down watcher")
-        watcher.shutdown()
+        _watcher.shutdown()
 
         logger.info("Shutting down log shipper")
-        shipper.stop()
+        _shipper.stop()
     except Exception as exc:  # pylint: disable=broad-except
         if report_errors:
             rollbar.report_exc_info()
