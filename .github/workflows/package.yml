@@ -105,7 +105,7 @@ jobs:
         run: Compress-Archive -Path build\x86_64-pc-windows-msvc\release\install -DestinationPath windows.zip
       
       - name: Upload pyoxidizer artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: windows-build
           path: windows.zip
